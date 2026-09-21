@@ -36,6 +36,7 @@ class SnapshotResult:
     excluded_count: int
     redaction_count: int
     mode: str
+    repository_root: Path
 
 
 def _digest(data: bytes) -> bytes:
@@ -70,7 +71,7 @@ def _compare(stream: BinaryIO, expected: bytes) -> None:
 
 
 def validate_snapshot(
-    input_root: Path,
+    repository_root: Path,
     snapshot_path: Path,
     expected: tuple[Section, ...] | None = None,
 ) -> tuple[Section, ...]:
@@ -79,7 +80,7 @@ def validate_snapshot(
     ``expected`` also checks that source did not change after the writing pass.
     The public validator can validate a snapshot without an in-memory manifest.
     """
-    listing = inventory(input_root)
+    listing = inventory(repository_root)
     expected_sources = {item.path: item.source_digest for item in expected or ()}
     if expected is not None and len(expected_sources) != len(expected):
         raise ValidationError("Duplicate expected snapshot paths.")
@@ -88,7 +89,7 @@ def validate_snapshot(
     eligible_paths: list[str] = []
     with _open_snapshot(snapshot_path) as staged:
         for relative in listing.paths:
-            text = read_text(input_root, relative, listing.encodings.get(relative))
+            text = read_text(repository_root, relative, listing.encodings.get(relative))
             if text is None:
                 continue
             eligible_paths.append(relative)
@@ -156,11 +157,11 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
     temporary: Path | None = None
     try:
         workspace = Workspace.open(project_root)
-        listing = inventory(workspace.input)
+        listing = inventory(workspace.repository)
         name = (
             output_name
             if output_name is not None
-            else repository_name(workspace.input, listing) + ".md"
+            else repository_name(workspace.repository, listing, input_root=workspace.input) + ".md"
         )
         target = workspace.target(name)
         descriptor, filename = tempfile.mkstemp(
@@ -172,7 +173,7 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
         excluded_count = listing.excluded_count
         with os.fdopen(descriptor, "wb") as staged:
             for relative in listing.paths:
-                text = read_text(workspace.input, relative, listing.encodings.get(relative))
+                text = read_text(workspace.repository, relative, listing.encodings.get(relative))
                 if text is None:
                     excluded_count += 1
                     continue
@@ -194,15 +195,29 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
                 )
                 redaction_count += count
             if not sections:
-                raise InputError("input/ contains no eligible source/text files.")
+                if listing.mode == "git":
+                    raise InputError(
+                        "The selected Git repository has no eligible tracked source/text files. "
+                        "Git mode includes tracked files only."
+                    )
+                raise InputError("The selected repository contains no eligible source/text files.")
             staged.flush()
             os.fsync(staged.fileno())
-        validated = validate_snapshot(workspace.input, temporary, tuple(sections))
+        workspace.check_repository_selection()
+        validated = validate_snapshot(workspace.repository, temporary, tuple(sections))
         final_secret_scan(temporary, validated)
+        workspace.check_repository_selection()
         workspace.target(name)  # Recheck boundary/target after all potentially lengthy reads.
         os.replace(temporary, target)
         temporary = None
-        return SnapshotResult(target, len(validated), excluded_count, redaction_count, listing.mode)
+        return SnapshotResult(
+            target,
+            len(validated),
+            excluded_count,
+            redaction_count,
+            listing.mode,
+            workspace.repository,
+        )
     except SnapshotError:
         raise
     except (OSError, UnicodeError, ValueError):

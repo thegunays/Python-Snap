@@ -448,7 +448,9 @@ def _check_git_metadata(root: Path, directory: Path) -> None:
             )
 
 
-def _git(root: Path, directory: Path, *args: str, data: bytes | None = None):
+def _git(
+    root: Path, directory: Path, *args: str, data: bytes | None = None, probe_root: bool = False
+):
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(
         {
@@ -476,10 +478,10 @@ def _git(root: Path, directory: Path, *args: str, data: bytes | None = None):
         "core.untrackedCache=false",
         "-c",
         "core.quotePath=false",
-        "--git-dir=" + str(directory),
-        "--work-tree=" + str(root),
-        *args,
     ]
+    if not probe_root:
+        command.extend(("--git-dir=" + str(directory), "--work-tree=" + str(root)))
+    command.extend(args)
     try:
         return subprocess.run(
             command, cwd=root, env=env, input=data, capture_output=True, check=False, timeout=60
@@ -503,17 +505,46 @@ def _nested(root: Path, relative: str) -> bool:
     return False
 
 
-def _git_inventory(root: Path, directory: Path) -> Inventory | None:
-    valid = _git(root, directory, "rev-parse", "--is-inside-work-tree")
+def is_git_root(root: Path) -> bool:
+    """Check whether the candidate is the actual root of its own Git working tree."""
+    root = root.absolute()
+    try:
+        info = root.lstat()
+        if _is_link(root, info) or not stat.S_ISDIR(info.st_mode):
+            return False
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise InventoryError("A candidate repository root cannot be inspected safely.") from None
+    directory = _git_directory(root)
+    return directory is not None and _exact_git_root(root, directory)
+
+
+def _exact_git_root(root: Path, directory: Path) -> bool:
+    # Local metadata was validated before this probe. Let Git identify its own
+    # work tree: forcing --work-tree here would hide a different core.worktree.
+    valid = _git(root, directory, "rev-parse", "--show-toplevel", probe_root=True)
     if valid is None:
         if (directory / "HEAD").exists():
             raise InventoryError(
                 "Git is required to inventory this repository, but its executable is unavailable."
             )
-        return None
-    if valid.returncode or valid.stdout.strip() != b"true":
+        return False
+    if valid.returncode:
         if (directory / "HEAD").exists():
             raise InventoryError("Root Git metadata is malformed or unreadable.")
+        return False
+    try:
+        actual = Path(os.fsdecode(valid.stdout.rstrip(b"\r\n")))
+        return actual.is_absolute() and actual.resolve(strict=True) == root.resolve(strict=True)
+    except (OSError, ValueError):
+        raise InventoryError(
+            "The actual Git working-tree root cannot be established safely."
+        ) from None
+
+
+def _git_inventory(root: Path, directory: Path) -> Inventory | None:
+    if not _exact_git_root(root, directory):
         return None
     result = _git(root, directory, "ls-files", "--stage", "-z")
     if result is None or result.returncode:
@@ -805,7 +836,7 @@ def git_remote_name(root: Path) -> str | None:
     """Read only the local origin URL; never resolve included config or contact remotes."""
     root = root.absolute()
     directory = _git_directory(root)
-    if directory is None:
+    if directory is None or not _exact_git_root(root, directory):
         return None
     result = _git(
         root, directory, "config", "--local", "--no-includes", "--get", "remote.origin.url"

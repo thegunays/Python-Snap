@@ -7,11 +7,16 @@ analysis, networking, Git mutation, commits, or writes under input are permitted
 ## Design decisions
 
 - Fixed workspace input/output boundaries; default project root comes from the
-  source checkout, or the current directory for an installed CLI.
+  source checkout (including editable installs), or the current directory for a
+  regular installed CLI.
+- Treat input as a repository container. Select its own exact Git root or one
+  independent descendant Git root, without traversing links or parents. Without
+  Git, unwrap one meaningful repository directory while retaining conventional
+  source layouts. Reject ambiguous independent candidates with safe relative paths.
 - Git index membership with current working-tree bytes; filesystem fallback only
   when no usable root Git metadata exists. Never inherit a parent's Git index.
 - Exclude derived artifacts and all symlinks deliberately. Nested repositories
-  and submodule contents do not expand the root inventory.
+  and submodule contents inside the selected repository do not expand its inventory.
 - Decode one file at a time, strictly, honoring BOMs and working-tree-encoding
   where available. Unsupported legitimate source encodings fail the run.
 - Extensible secret rules return value spans. Preserve placeholders; apply
@@ -20,7 +25,9 @@ analysis, networking, Git mutation, commits, or writes under input are permitted
   Keep a private in-memory record of section offsets, sizes and hashes. This is
   needed because source itself may contain lines beginning with `file:`.
 - A fresh inventory and read/eligibility pass checks the staged sections against
-  current source. Re-scan the completed file, then atomically replace its target.
+  current source. Recheck repository selection and wrapper identities before
+  validation and publication. Re-scan completed output, then atomically replace
+  its target. All source paths are relative to the selected repository.
 - Fail on filenames containing line separators/control characters that cannot
   fit the required one-line header. Fail safely on source changes during a run.
 

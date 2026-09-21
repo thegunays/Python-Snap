@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None, *, project_root: Path | None = None)
     """Run a snapshot, reporting safe diagnostics and a meaningful exit status."""
     parser = _ArgumentParser(
         prog="repo-snapshot",
-        description="Create a validated Markdown source snapshot from input/ into output/.",
+        description="Discover one repository under input/ and create its snapshot under output/.",
         allow_abbrev=False,
     )
     parser.add_argument("--output", metavar="NAME.md", help="output basename (under output/)")
@@ -44,9 +44,17 @@ def main(argv: Sequence[str] | None = None, *, project_root: Path | None = None)
         return 1
     try:
         # Keep help/version independent of repository processing and input state.
+        from .secrets import redact
         from .snapshot import generate
 
-        result = generate(project_root or _project_root(), output_name=arguments.output)
+        root = (project_root or _project_root()).resolve()
+        result = generate(root, output_name=arguments.output)
+        relative = result.repository_root.relative_to(root / "input").as_posix()
+        label = "input/" if relative == "." else "input/" + relative + "/"
+        label, _ = redact(label)
+        label = "".join(character for character in label if character.isprintable())
+        label, _ = redact(label)
+        print(f"Source: {label}")
         print(f"Generated: {result.path}")
         print(
             f"Validated: {result.file_count} file(s), {result.excluded_count} excluded, "

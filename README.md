@@ -8,20 +8,22 @@ network access.
 
 ## Run
 
-Install **Python 3.12 or newer** once, then copy the **contents of the repository**
-into this project's `input/` directory. Copy its `.git/` directory too if you want
-Git-based membership. The repository root belongs directly inside `input/`, rather
-than inside another wrapper directory.
+Install **Python 3.12 or newer** once, then copy either a **whole repository folder**
+or its **contents** into this project's `input/` directory. `input/` is a container:
+the application discovers the repository automatically. Include its `.git` metadata
+to use tracked Git membership, or copy source without Git metadata.
 
 ```text
 Python-Snap/
 ├── input/
-│   ├── README.md
-│   ├── src/
-│   └── .git/             optional
+│   └── MyRepository/     or place these contents directly inside input/
+│       ├── README.md
+│       ├── src/
+│       └── .git/         optional
 ├── output/               created automatically
 ├── src/repo_snapshot/    application
 ├── repo_snapshot/        checkout module bootstrap
+├── tests/                repository-discovery regressions
 ├── run.bat
 ├── run.command
 └── run.sh
@@ -54,20 +56,43 @@ python3 -m repo_snapshot --help
 
 On Windows, use `py -3.12 -m repo_snapshot` if `python` is unavailable. The optional
 installed command is `repo-snapshot`; install the local package with
-`python -m pip install .`. A source checkout always uses its own `input/` and
-`output/`. An installed package uses `input/` and `output/` under the current working
-directory. `--output` accepts a simple `.md` basename, never a path.
+`python -m pip install .`. A source checkout, including an editable installation,
+always uses its own `input/` and `output/`. A regular installed package uses
+`input/` and `output/` under the current working directory. `--output` accepts a
+simple `.md` basename, never a path.
 
-The default name is derived deterministically from repository metadata or
-unambiguous project/workspace identifiers, falling back to `repository.md`.
+The default name prefers reliable Git metadata, then the discovered repository's
+folder name, then unambiguous project/workspace identifiers, falling back to
+`repository.md`. The container name `input` does not supply the default name.
 Generated files stay under `output/`; existing snapshots are replaced only after
 the new snapshot passes validation.
+
+## Repository discovery
+
+A valid Git repository directly at `input/` takes priority. Otherwise the program
+searches beneath `input/`, including harmless wrapper directories, and selects one
+independent Git root. Once a Git root is found, its nested repositories and
+submodules do not become competing roots. Multiple independent repositories cause
+an error listing only their safe, relative candidate paths; keep one repository in
+the container and run again.
+
+Without usable Git metadata, direct repository content stays rooted at `input/`.
+A single meaningful repository folder is selected automatically. Ordinary source
+layouts such as `src/` and `deploy/` remain part of their containing repository;
+ambiguous collections of unrelated folders are rejected rather than guessed.
+Discovery ignores symlinks, junctions, generated directories and operating-system
+noise, and never searches above `input/`.
+
+For example, both `input/MyRepository/src/App.cs` and
+`input/wrapper/MyRepository/src/App.cs` produce `file: src/App.cs` after
+`MyRepository` is selected. Output always stays in this application's `output/`.
 
 ## Snapshot contract
 
 Each eligible file appears exactly once, in deterministic order: root-level files
-first, then nested paths in lexical order. Paths are relative to `input/` and use
-forward slashes. Sections have this form, with no added fences or commentary:
+first, then nested paths in lexical order. Paths are relative to the **discovered
+repository root**, use forward slashes, and omit container/wrapper directory names.
+Sections have this form, with no added fences or commentary:
 
 ```text
 file: README.md
@@ -85,16 +110,18 @@ replacement characters or silent omission. Encoding BOMs are consumed when
 decoding, so this is a textual snapshot, not a byte-for-byte archive.
 
 Git index membership is authoritative when usable Git metadata belongs to the
-root of `input/`; tracked modifications and tracked files matching ignore rules
+discovered repository root; tracked modifications and tracked files matching ignore rules
 are included. Untracked files are not part of that Git snapshot. Without usable
-root Git metadata, the utility recursively inventories the filesystem. Parent Git
+root Git metadata, the utility recursively inventories the selected filesystem tree. Parent Git
 metadata never supplies membership. Known binaries, build output, caches, and
 derived dependencies are excluded; filtering also inspects bytes rather than
 trusting extensions alone. Maintained legacy and backup source directories are
 not excluded just because of their names.
 
-All symlinks are skipped. Submodules and nested repositories are not recursively
-expanded. Git LFS pointers remain pointer text; objects are never downloaded.
+All symlinks are skipped. Submodules and nested repositories **inside the selected
+repository** are not recursively expanded. Git LFS pointers remain pointer text;
+objects are never downloaded. `.git` files are supported when their metadata stays
+inside the selected source boundary; external worktree metadata is not followed.
 Nothing under `input/` is written, executed, formatted, or redacted in place.
 No Git initialization, fetching, configuration updates, telemetry, or upload occurs.
 
@@ -117,8 +144,8 @@ can escape detection, and some ordinary values can be mistaken for secrets.
 Review a snapshot before sharing it. The utility reports counts and safe errors,
 never detected values.
 
-Generation stages a temporary file under `output/`, independently inventories and
-reads source again, validates membership and content, performs a second secret
+Generation stages a temporary file under `output/`, independently checks repository
+selection, inventories and reads source again, validates membership and content, performs a second secret
 scan over the completed snapshot, and then atomically replaces the destination.
 Failures preserve an earlier valid output and do not publish a partial snapshot.
 Keep `input/` unchanged while a run is in progress; detected changes cause failure.
@@ -147,11 +174,12 @@ Exit codes:
 
 ## Development
 
-Runtime dependencies are standard-library only. Development uses Ruff:
+Runtime dependencies are standard-library only. Development uses pytest and Ruff:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest -q
 .venv/bin/python -m ruff check .
 ```
 
@@ -160,7 +188,7 @@ Dependency installation is an explicit development step and may need network
 access. The Windows batch launcher is supplied but requires a Windows host for
 runtime verification.
 
-The package separates inventory/decoding, secret detection, workspace/output
+The package separates discovery, inventory/decoding, secret detection, workspace/output
 handling, snapshot validation, and CLI reporting. The checkout bootstrap exposes
 the source package without executing source strings or changing global `sys.path`.
 

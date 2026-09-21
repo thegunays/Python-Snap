@@ -9,7 +9,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .errors import InputError
+from .discovery import discover_repository
+from .errors import InputError, SnapshotError, ValidationError
 from .inventory import Inventory, git_remote_name, read_text
 from .secrets import has_secrets
 
@@ -56,11 +57,14 @@ def _safe_identifier(value: str) -> str | None:
     return value
 
 
-def repository_name(root: Path, listing: Inventory) -> str:
-    """Prefer local origin metadata, then unambiguous workspace/project evidence."""
+def repository_name(root: Path, listing: Inventory, *, input_root: Path | None = None) -> str:
+    """Prefer origin, a discovered folder name, then workspace/project evidence."""
     if listing.mode == "git":
         origin = git_remote_name(root)
         if origin and (name := _safe_identifier(origin)):
+            return name
+    if input_root is not None and root != input_root and root.is_relative_to(input_root):
+        if name := _safe_identifier(root.name):
             return name
     for suffixes in (
         {".sln", ".slnx", ".code-workspace"},
@@ -104,6 +108,8 @@ class Workspace:
     output: Path
     input_identity: tuple[int, int]
     output_identity: tuple[int, int]
+    repository: Path
+    repository_identities: tuple[tuple[Path, tuple[int, int]], ...]
 
     @classmethod
     def open(cls, project_root: Path) -> Workspace:
@@ -114,6 +120,17 @@ class Workspace:
             raise InputError(
                 "input/ must exist as a real directory. Copy repository files into it."
             )
+        repository = discover_repository(source)
+        if not repository.is_relative_to(source):
+            raise InputError("The discovered repository lies outside input/.")
+        identities = []
+        current = source
+        for part in repository.relative_to(source).parts:
+            current /= part
+            info = current.lstat()
+            if _linked(current) or not stat.S_ISDIR(info.st_mode):
+                raise InputError("Repository discovery encountered an unsafe directory boundary.")
+            identities.append((current, (info.st_dev, info.st_ino)))
         if _linked(destination):
             raise InputError("output/ must be a real directory, not a symbolic link or junction.")
         destination.mkdir(mode=0o700, exist_ok=True)
@@ -126,12 +143,15 @@ class Workspace:
             destination,
             (source_stat.st_dev, source_stat.st_ino),
             (destination_stat.st_dev, destination_stat.st_ino),
+            repository,
+            tuple(identities),
         )
 
     def check_boundaries(self) -> None:
         for path, expected in (
             (self.input, self.input_identity),
             (self.output, self.output_identity),
+            *self.repository_identities,
         ):
             current = path.lstat()
             if (
@@ -142,6 +162,19 @@ class Workspace:
                 raise InputError(
                     "Workspace directories changed during generation; rerun on stable input."
                 )
+
+    def check_repository_selection(self) -> None:
+        """Do not publish after a wrapper swap or a newly ambiguous container."""
+        self.check_boundaries()
+        try:
+            selected = discover_repository(self.input)
+        except SnapshotError:
+            raise ValidationError(
+                "Repository discovery changed during generation; rerun on stable input."
+            ) from None
+        if selected != self.repository:
+            raise ValidationError("The selected repository changed during generation.")
+        self.check_boundaries()
 
     def target(self, name: str) -> Path:
         self.check_boundaries()

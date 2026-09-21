@@ -1,13 +1,38 @@
 # Verification notes
 
-This is a historical record of checks performed before the test directory was
-removed at the user's request. The automated test suite is no longer included.
+The original test suite was removed at the user's request. The later repository
+discovery specification explicitly required behavioral tests, so the project now
+includes a focused discovery and integration suite. Original verification results
+are retained below as historical evidence, not as the current test count.
 
 Verified on macOS ARM64 with Python 3.12.14. The application has no third-party
 runtime dependencies. pytest 9.1.1 and Ruff 0.16.8 were installed in the local
 `.venv` for development. No repository contents were uploaded or committed.
 
-## Automated verification
+## Current repository-discovery verification
+
+**109 tests passed** in the final full-suite run; Ruff and POSIX launcher syntax
+checks passed. The suite uses real temporary Git indexes and copied working trees,
+with no commits or remote access. It covers direct and wrapped Git repositories,
+arbitrary names, spaces and Unicode, contained `.git` files, parent metadata
+rejection, nested repositories/submodules, source-only wrappers, conventional
+multi-project layouts, ambiguity diagnostics, and symlink/junction policies.
+
+Integration tests run the Python module, `run.sh`, and `run.command` after copying
+an entire Git working-tree directory into `input/`. They also verify selected-root
+paths, output naming/isolation, read-only input, tracked current contents, secret-safe
+candidate diagnostics, and preservation of previous output when discovery changes.
+
+The existing `input/xproject/` .NET fixture was processed successfully by the real
+launcher and module. All **1,208 eligible files** appeared under paths such as
+`src/Program.cs`, without `xproject/` or `input/` prefixes. The output is
+`output/xproject.md`. Independent validation and the final secret scan passed;
+all input content hashes stayed unchanged, and repeated output was byte-identical.
+
+Windows-host and Linux-host execution were not performed; POSIX launcher execution
+was verified on macOS. No separate type checker is configured.
+
+## Original automated verification
 
 Commands used during the original verification:
 
@@ -53,7 +78,8 @@ no claim of those platform runs is made. No separate type checker is configured.
 
 Representative repositories were created only inside isolated temporary test
 workspaces, each using the required `input/` and `output/` layout. The project's
-actual `input/` and `output/` remain empty, ready for the user's repository.
+actual `input/` and `output/` were empty at that stage. The user subsequently
+requested the synthetic .NET fixture now stored under `input/xproject/`.
 
 ## Deliberate limits
 
@@ -61,7 +87,9 @@ Secret detection is heuristic; unknown, obfuscated, or split credentials can be
 missed, and false positives remain possible. Explicit failures replace guesses
 for unsupported text encodings, unrepresentable filenames, unsafe Git metadata,
 Git configuration includes, and encoding macros without Git metadata. All links
-and nested repository/submodule contents are excluded. Keep input stable during a
+and nested repository/submodule contents inside the selected root are excluded.
+Ordinary external worktree metadata is not followed; contained `.git` files are
+supported, and source-only copies remain usable. Keep input stable during a
 run. The required raw `file:` format cannot provide an unambiguous standalone
 parser when original source contains identical header-like lines; internal
 validation uses source-derived boundaries and private byte records instead.
