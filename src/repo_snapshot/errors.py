@@ -1,4 +1,4 @@
-"""Safe public errors: messages must never contain source or credential values."""
+"""Public error categories and CLI exit codes."""
 
 
 class SnapshotError(Exception):
@@ -20,6 +20,6 @@ class InventoryError(SnapshotError):
 
 
 class ValidationError(SnapshotError):
-    """Completeness, fidelity, or secret validation failed."""
+    """Completeness, fidelity, or integrity validation failed."""
 
     exit_code = 4

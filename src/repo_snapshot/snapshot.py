@@ -16,7 +16,6 @@ from typing import BinaryIO
 
 from .errors import InputError, SnapshotError, ValidationError
 from .inventory import inventory, read_text
-from .secrets import has_secrets, redact
 from .workspace import Workspace, repository_name
 
 
@@ -34,7 +33,6 @@ class SnapshotResult:
     path: Path
     file_count: int
     excluded_count: int
-    redaction_count: int
     mode: str
     repository_root: Path
 
@@ -44,10 +42,6 @@ def _digest(data: bytes) -> bytes:
 
 
 def _header(path: str) -> bytes:
-    if has_secrets(path):
-        raise ValidationError(
-            "A source filename contains a detectable credential; publication blocked."
-        )
     return f"file: {path}\n".encode()
 
 
@@ -67,7 +61,7 @@ def _compare(stream: BinaryIO, expected: bytes) -> None:
     view = memoryview(expected)
     for start in range(0, len(expected), 65536):
         if stream.read(min(65536, len(expected) - start)) != view[start : start + 65536]:
-            raise ValidationError("Snapshot content differs from complete, redacted source.")
+            raise ValidationError("Snapshot content differs from complete source.")
 
 
 def validate_snapshot(
@@ -93,13 +87,12 @@ def validate_snapshot(
             if text is None:
                 continue
             eligible_paths.append(relative)
-            source_digest = _digest(text.encode("utf-8"))
+            payload = text.encode("utf-8")
+            source_digest = _digest(payload)
             if expected is not None and expected_sources.get(relative) != source_digest:
                 raise ValidationError(
                     "Eligible source membership or contents changed during generation."
                 )
-            clean, _ = redact(text)
-            payload = clean.encode("utf-8")
             header = _header(relative)
             start = staged.tell()
             actual_header = staged.readline(len(header) + 1)
@@ -127,12 +120,8 @@ def validate_snapshot(
     return tuple(sections)
 
 
-def final_secret_scan(snapshot_path: Path, sections: tuple[Section, ...]) -> None:
-    """Re-read completed UTF-8 output, scanning full source sections and headers.
-
-    Memory is bounded by the largest source section; no heuristic splitting on
-    source text, fixed line limits or secret-length cutoffs are used.
-    """
+def verify_snapshot_integrity(snapshot_path: Path, sections: tuple[Section, ...]) -> None:
+    """Confirm validated section bytes have not changed before publication."""
     with _open_snapshot(snapshot_path) as staged:
         for section in sections:
             if staged.tell() != section.offset:
@@ -140,14 +129,6 @@ def final_secret_scan(snapshot_path: Path, sections: tuple[Section, ...]) -> Non
             data = staged.read(section.size)
             if len(data) != section.size or _digest(data) != section.snapshot_digest:
                 raise ValidationError("Snapshot changed after completeness validation.")
-            try:
-                text = data.decode("utf-8", errors="strict")
-            except UnicodeError:
-                raise ValidationError("Snapshot is not valid UTF-8.") from None
-            if has_secrets(text):
-                raise ValidationError(
-                    "Final secret scan detected a credential; publication blocked."
-                )
         if staged.read(1):
             raise ValidationError("Snapshot changed after completeness validation.")
 
@@ -169,7 +150,6 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
         )
         temporary = Path(filename)
         sections: list[Section] = []
-        redaction_count = 0
         excluded_count = listing.excluded_count
         with os.fdopen(descriptor, "wb") as staged:
             for relative in listing.paths:
@@ -177,9 +157,8 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
                 if text is None:
                     excluded_count += 1
                     continue
-                source_digest = _digest(text.encode("utf-8"))
-                clean, count = redact(text)
-                payload = clean.encode("utf-8")
+                payload = text.encode("utf-8")
+                source_digest = _digest(payload)
                 header = _header(relative)
                 start = staged.tell()
                 staged.write(header)
@@ -193,7 +172,6 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
                         relative, start, staged.tell() - start, source_digest, checksum.digest()
                     )
                 )
-                redaction_count += count
             if not sections:
                 if listing.mode == "git":
                     raise InputError(
@@ -205,7 +183,7 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
             os.fsync(staged.fileno())
         workspace.check_repository_selection()
         validated = validate_snapshot(workspace.repository, temporary, tuple(sections))
-        final_secret_scan(temporary, validated)
+        verify_snapshot_integrity(temporary, validated)
         workspace.check_repository_selection()
         workspace.target(name)  # Recheck boundary/target after all potentially lengthy reads.
         os.replace(temporary, target)
@@ -214,14 +192,13 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
             target,
             len(validated),
             excluded_count,
-            redaction_count,
             listing.mode,
             workspace.repository,
         )
     except SnapshotError:
         raise
     except (OSError, UnicodeError, ValueError):
-        # OS errors may include credential-bearing filenames; never echo them.
+        # Keep filesystem failures concise and independent of OS-specific wording.
         raise SnapshotError(
             "Snapshot failed: check file permissions, available disk space and workspace paths."
         ) from None

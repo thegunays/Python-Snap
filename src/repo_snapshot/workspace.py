@@ -12,7 +12,6 @@ from pathlib import Path
 from .discovery import discover_repository
 from .errors import InputError, SnapshotError, ValidationError
 from .inventory import Inventory, git_remote_name, read_text
-from .secrets import has_secrets
 
 _RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)", re.I)
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
@@ -38,15 +37,11 @@ def validate_output_name(name: str) -> str:
         raise InputError(
             "Output must be a portable .md filename, without directories or traversal."
         )
-    if has_secrets(name):
-        raise InputError("Output filename contains a detectable credential; choose a neutral name.")
     return name
 
 
 def _safe_identifier(value: str) -> str | None:
     """Normalize project identifiers, not arbitrary filesystem directory names."""
-    if has_secrets(value):
-        return None
     value = re.sub(r"[^\w.-]+", "-", value.strip(), flags=re.UNICODE).strip(".-")
     if not value:
         return None

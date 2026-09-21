@@ -2,7 +2,7 @@
 
 Create one portable Markdown file containing a repository's eligible source,
 configuration, infrastructure, scripts, and documentation. The utility inventories,
-redacts, writes, and validates the snapshot. It does not analyze code or contact an
+writes, and validates the snapshot. It does not analyze code or contact an
 AI service. Normal operation uses the Python standard library and requires no
 network access.
 
@@ -23,7 +23,6 @@ Python-Snap/
 ├── output/               created automatically
 ├── src/repo_snapshot/    application
 ├── repo_snapshot/        checkout module bootstrap
-├── tests/                repository-discovery regressions
 ├── run.bat
 ├── run.command
 └── run.sh
@@ -73,8 +72,8 @@ A valid Git repository directly at `input/` takes priority. Otherwise the progra
 searches beneath `input/`, including harmless wrapper directories, and selects one
 independent Git root. Once a Git root is found, its nested repositories and
 submodules do not become competing roots. Multiple independent repositories cause
-an error listing only their safe, relative candidate paths; keep one repository in
-the container and run again.
+an error listing their relative candidate paths with control characters removed;
+keep one repository in the container and run again.
 
 Without usable Git metadata, direct repository content stays rooted at `input/`.
 A single meaningful repository folder is selected automatically. Ordinary source
@@ -103,8 +102,8 @@ original content
 ```
 
 Current working-tree content is preserved, including empty files, comments,
-indentation, and original newlines, except for detected secret values. Output is
-UTF-8. UTF-8, BOM-marked UTF-8/UTF-16, and supported repository encoding metadata
+indentation, original newlines, and source values. Output is UTF-8. UTF-8,
+BOM-marked UTF-8/UTF-16, and supported repository encoding metadata
 are decoded strictly; undecodable eligible source causes failure rather than
 replacement characters or silent omission. Encoding BOMs are consumed when
 decoding, so this is a textual snapshot, not a byte-for-byte archive.
@@ -122,7 +121,7 @@ All symlinks are skipped. Submodules and nested repositories **inside the select
 repository** are not recursively expanded. Git LFS pointers remain pointer text;
 objects are never downloaded. `.git` files are supported when their metadata stays
 inside the selected source boundary; external worktree metadata is not followed.
-Nothing under `input/` is written, executed, formatted, or redacted in place.
+Nothing under `input/` is written, executed, or formatted in place.
 No Git initialization, fetching, configuration updates, telemetry, or upload occurs.
 
 Git must be installed when `input/` contains recognized Git metadata; a missing
@@ -134,19 +133,15 @@ source stays included. Ordinary nested `.gitattributes` encoding rules are suppo
 encoding macros require usable Git metadata. An excluded directory counts as one
 pruned entry in the reported exclusion count.
 
-## Secrets and validation
+## Validation
 
-Contextual credential assignments, connection-string passwords, private keys,
-and recognizable provider tokens are redacted to `[REDACTED]`. Clear placeholders
-such as `${PASSWORD}`, `#{AzureDevOps_Pat}#`, and `CHANGEME` are preserved. Secret
-detection is **best effort**: custom, obfuscated, split, or unfamiliar credentials
-can escape detection, and some ordinary values can be mistaken for secrets.
-Review a snapshot before sharing it. The utility reports counts and safe errors,
-never detected values.
+Eligible decoded source content is written unchanged. No secret detection or
+masking is applied to source content, source/output names, CLI labels, or diagnostics.
 
-Generation stages a temporary file under `output/`, independently checks repository
-selection, inventories and reads source again, validates membership and content, performs a second secret
-scan over the completed snapshot, and then atomically replaces the destination.
+Generation stages a temporary file under `output/`. Independent validation rechecks
+repository selection, inventory, and source content. The completed snapshot's
+section boundaries, lengths, and hashes are verified before atomic replacement of
+the destination.
 Failures preserve an earlier valid output and do not publish a partial snapshot.
 Keep `input/` unchanged while a run is in progress; detected changes cause failure.
 This is not a filesystem transaction and cannot protect against a malicious
@@ -169,26 +164,26 @@ Exit codes:
 | 1 | Runtime, storage, or unexpected failure |
 | 2 | Invalid input, output name, empty eligible inventory, or CLI arguments |
 | 3 | Inventory, source-read, or decoding failure |
-| 4 | Completeness, fidelity, or secret-validation failure |
+| 4 | Completeness, fidelity, or integrity-validation failure |
 | 130 | Interrupted |
 
 ## Development
 
-Runtime dependencies are standard-library only. Development uses pytest and Ruff:
+Runtime dependencies are standard-library only. Development checks use Ruff:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/python -m pytest -q
 .venv/bin/python -m ruff check .
 ```
 
 On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.
 Dependency installation is an explicit development step and may need network
-access. The Windows batch launcher is supplied but requires a Windows host for
-runtime verification.
+access. The test suite was removed at the user's request; prior test results are
+recorded in the verification notes. The Windows batch launcher is supplied but
+requires a Windows host for runtime verification.
 
-The package separates discovery, inventory/decoding, secret detection, workspace/output
+The package separates discovery, inventory/decoding, workspace/output
 handling, snapshot validation, and CLI reporting. The checkout bootstrap exposes
 the source package without executing source strings or changing global `sys.path`.
 

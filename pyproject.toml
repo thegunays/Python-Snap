@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "repo-snapshot"
 version = "1.0.0"
-description = "Deterministic, validated, secret-redacted repository source snapshots"
+description = "Deterministic, validated repository source snapshots"
 requires-python = ">=3.12"
 dependencies = []
 

@@ -22,7 +22,6 @@ from pathlib import Path
 
 from .errors import InputError
 from .inventory import _ARTIFACT_DIRS, _OS_FILES, is_git_root
-from .secrets import redact
 
 _SOURCE_DIRECTORIES = frozenset(
     {
@@ -135,15 +134,12 @@ def _contents(directory: Path) -> _Directory:
 
 def _candidate_label(candidate: Path, boundary: Path) -> str:
     relative = candidate.relative_to(boundary).as_posix()
-    cleaned, _ = redact(relative)
     cleaned = "".join(
         character
-        for character in cleaned
+        for character in relative
         if not unicodedata.category(character).startswith("C")
         and unicodedata.category(character) not in {"Zl", "Zp"}
     )
-    # Removing controls could join pieces into a recognizable credential.
-    cleaned, _ = redact(cleaned)
     return (cleaned or "[unnamed directory]") + "/"
 
 
