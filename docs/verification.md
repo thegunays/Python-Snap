@@ -6,14 +6,34 @@ counts and fixture paths do not describe the current workspace.
 
 ## Current behavior
 
+Decoding prefers BOMs and working-tree-encoding, then UTF-8 and a project-wide
+fallback (cp1254 by default, selectable with `--fallback-encoding`). Remaining
+decoding failures use U+FFFD. Damaged BOM-marked Unicode and declared or detected
+UTF-16/UTF-32 retain their encoding. Unusable per-file metadata is recoverable;
+invalid CLI codecs are errors. Recovery warnings are emitted once per file on
+stderr across all passes.
+Fallback selection is explicit, not automatic encoding guessing.
+
 No secret detection or masking applies to source content, source/output names,
-CLI labels, or diagnostics. Eligible decoded source content is preserved unchanged.
+CLI labels, or diagnostics. Decoded content is preserved without further rewriting.
 Independent validation checks repository selection, source membership and content;
 completed-section bounds, lengths, and hashes are verified before atomic publication.
-Path containment and control-character safety remain. The historical results below
-predate this change and do not constitute verification of it.
+Raw-byte hashes detect source changes even when lossy decoding produces identical
+text. Binary filtering, path containment, and control-character safety remain;
+input files are never changed. The historical results below predate this change
+and do not constitute verification of it.
 
-## Current change verification
+## Current flexible-decoding verification
+
+**52 isolated temporary tests passed**: 41 encoding cases and 11 regressions for
+unmasked content and retained safety checks. They include recovery warnings,
+truncated Unicode, and rejection of raw-byte changes that decode to identical
+U+FFFD text. Copied-checkout runs of both `run.sh` and `run.command` with
+`--fallback-encoding cp1252` verified exact content, CRLF preservation, and one
+stderr warning. Ruff and `git diff --check` passed. The project's `tests/`,
+`input/`, and `output/` directories remain absent.
+
+## Historical removal of all secret detection and masking
 
 **11 isolated temporary tests passed**, covering unchanged JSON/.NET values and
 CRLF, deterministic output, unmodified input, credential-like names and CLI labels,
@@ -109,9 +129,10 @@ that fixture and its generated output have since been removed.
 
 ## Deliberate limits
 
-Explicit failures replace guesses for unsupported text encodings, unrepresentable
-filenames, unsafe Git metadata, Git configuration includes, and encoding macros
-without Git metadata. All links
+The fallback codec is selected for the whole project; output may contain U+FFFD
+where decoding cannot preserve a character. Explicit failures remain for
+unrepresentable filenames, unsafe Git metadata, Git configuration includes, and
+encoding macros without Git metadata. All links
 and nested repository/submodule contents inside the selected root are excluded.
 Ordinary external worktree metadata is not followed; contained `.git` files are
 supported, and source-only copies remain usable. Keep input stable during a

@@ -50,6 +50,7 @@ From the project root, direct execution needs no package installation:
 ```sh
 python3 -m repo_snapshot
 python3 -m repo_snapshot --output MySnapshot.md
+python3 -m repo_snapshot --fallback-encoding cp1252
 python3 -m repo_snapshot --help
 ```
 
@@ -101,12 +102,23 @@ file: src/app.py
 original content
 ```
 
-Current working-tree content is preserved, including empty files, comments,
-indentation, original newlines, and source values. Output is UTF-8. UTF-8,
-BOM-marked UTF-8/UTF-16, and supported repository encoding metadata
-are decoded strictly; undecodable eligible source causes failure rather than
-replacement characters or silent omission. Encoding BOMs are consumed when
-decoding, so this is a textual snapshot, not a byte-for-byte archive.
+Decoded working-tree content is preserved, including empty files, comments,
+indentation, original newlines, and source values. Output is UTF-8. Decoding prefers
+a Unicode BOM or `working-tree-encoding` metadata, then tries UTF-8 and the selected
+fallback encoding. BOM-less UTF-16 is also recognized from its byte layout where
+possible. The default fallback is **cp1254** for legacy Turkish source;
+`--fallback-encoding cp1252`, for example, selects a different fallback for the
+whole project. The fallback is selected project-wide rather than guessed
+separately for each file.
+
+If decoding still cannot recover a character, the snapshot may contain the
+replacement character `U+FFFD` (`�`). Damaged or truncated Unicode with a BOM,
+a UTF-16/UTF-32 declaration, or a recognized UTF-16 layout retains its encoding
+for replacement decoding. Unknown or unusable per-file encoding metadata is
+recoverable; an invalid CLI fallback codec is an input error.
+Recovery warnings go to stderr and are deduplicated per file across naming,
+generation, and validation. BOMs are consumed during decoding. The result is a
+textual snapshot, not a byte-for-byte archive; input files are never changed.
 
 Git index membership is authoritative when usable Git metadata belongs to the
 discovered repository root; tracked modifications and tracked files matching ignore rules
@@ -141,7 +153,8 @@ masking is applied to source content, source/output names, CLI labels, or diagno
 Generation stages a temporary file under `output/`. Independent validation rechecks
 repository selection, inventory, and source content. The completed snapshot's
 section boundaries, lengths, and hashes are verified before atomic replacement of
-the destination.
+the destination. Original-byte hashes detect source changes even when different
+bytes would decode to the same replacement characters.
 Failures preserve an earlier valid output and do not publish a partial snapshot.
 Keep `input/` unchanged while a run is in progress; detected changes cause failure.
 This is not a filesystem transaction and cannot protect against a malicious
@@ -162,8 +175,8 @@ Exit codes:
 | --- | --- |
 | 0 | Generated and validated |
 | 1 | Runtime, storage, or unexpected failure |
-| 2 | Invalid input, output name, empty eligible inventory, or CLI arguments |
-| 3 | Inventory, source-read, or decoding failure |
+| 2 | Invalid input, output name, fallback codec, empty eligible inventory, or CLI arguments |
+| 3 | Inventory or source-read failure |
 | 4 | Completeness, fidelity, or integrity-validation failure |
 | 130 | Interrupted |
 

@@ -1,4 +1,4 @@
-"""Read-only membership, conservative artifact policy, and strict source decoding.
+"""Read-only membership, conservative artifact policy, and flexible source decoding.
 
 Git only supplies tracked paths and encoding attributes. No checkout, filter,
 hook, submodule, or remote operation is performed. All content comes from guarded
@@ -7,6 +7,7 @@ reads of current working-tree files.
 
 import codecs
 import fnmatch
+import hashlib
 import os
 import re
 import shlex
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
+from .decoding import DecodingContext
 from .errors import InventoryError
 
 
@@ -26,6 +28,12 @@ class Inventory:
     excluded_count: int
     mode: str
     encodings: dict[str, str]
+
+
+@dataclass(frozen=True)
+class SourceText:
+    text: str
+    source_digest: bytes
 
 
 _ARTIFACT_DIRS = frozenset(
@@ -588,16 +596,18 @@ def _git_inventory(root: Path, directory: Path) -> Inventory | None:
         for index in range(0, len(fields) - 2, 3):
             value = fields[index + 2]
             if value not in {b"unspecified", b"unset", b"set"}:
-                try:
-                    encodings[os.fsdecode(fields[index])] = value.decode("ascii")
-                except UnicodeError:
-                    raise InventoryError(
-                        "Repository text encoding metadata is unsupported."
-                    ) from None
+                # Invalid codec labels follow the same per-file recovery path
+                # as unknown labels in a source-only repository.
+                encodings[os.fsdecode(fields[index])] = value.decode("ascii", errors="replace")
     return Inventory(ordered, len(excluded), "git", encodings)
 
 
-def _ignore_rules(root: Path, directory: str) -> list[tuple[str, str, bool]]:
+def _ignore_rules(
+    root: Path,
+    directory: str,
+    decoding: DecodingContext,
+    attributes: list[tuple[str, str, str | None]],
+) -> list[tuple[str, str, bool]]:
     path = (directory + "/" if directory else "") + ".gitignore"
     target = root / path
     if not os.path.lexists(target):
@@ -605,7 +615,7 @@ def _ignore_rules(root: Path, directory: str) -> list[tuple[str, str, bool]]:
     data = _read_bytes(root, path)
     if data is None:
         return []
-    content = _decode(data, path, None)
+    content = _decode(data, path, _path_encoding(path, attributes), decoding=decoding)
     if content is None:
         raise InventoryError("Repository ignore guidance cannot be decoded safely.")
     rules = []
@@ -641,7 +651,12 @@ def _ignored(relative: str, rules: list[tuple[str, str, bool]]) -> bool:
     return ignored
 
 
-def _attribute_rules(root: Path, directory: str) -> list[tuple[str, str, str | None]]:
+def _attribute_rules(
+    root: Path,
+    directory: str,
+    decoding: DecodingContext,
+    inherited: list[tuple[str, str, str | None]],
+) -> list[tuple[str, str, str | None]]:
     """Read simple working-tree-encoding patterns when Git metadata is unavailable.
 
     Attribute macros containing encodings are rejected because guessing their
@@ -650,7 +665,7 @@ def _attribute_rules(root: Path, directory: str) -> list[tuple[str, str, str | N
     relative = (directory + "/" if directory else "") + ".gitattributes"
     if not os.path.lexists(root / relative):
         return []
-    content = read_text(root, relative)
+    content = read_text(root, relative, _path_encoding(relative, inherited), decoding=decoding)
     if content is None:
         return []
     rules: list[tuple[str, str, str | None]] = []
@@ -694,15 +709,17 @@ def _path_encoding(relative: str, rules: list[tuple[str, str, str | None]]) -> s
     return encoding
 
 
-def _filesystem_inventory(root: Path) -> Inventory:
+def _filesystem_inventory(root: Path, decoding: DecodingContext) -> Inventory:
     paths: list[str] = []
     encodings: dict[str, str] = {}
     excluded = 0
     pending = [(root, "", [], [])]
     while pending:
         directory, relative_dir, inherited_rules, inherited_attributes = pending.pop()
-        rules = inherited_rules + _ignore_rules(root, relative_dir)
-        attributes = inherited_attributes + _attribute_rules(root, relative_dir)
+        attributes = inherited_attributes + _attribute_rules(
+            root, relative_dir, decoding, inherited_attributes
+        )
+        rules = inherited_rules + _ignore_rules(root, relative_dir, decoding, attributes)
         try:
             with os.scandir(directory) as scan:
                 entries = sorted(scan, key=lambda entry: entry.name)
@@ -737,7 +754,7 @@ def _filesystem_inventory(root: Path) -> Inventory:
     return Inventory(_ordered(paths), excluded, "filesystem", encodings)
 
 
-def inventory(root: Path) -> Inventory:
+def inventory(root: Path, *, decoding: DecodingContext | None = None) -> Inventory:
     """Inventory current files without following links or using parent Git metadata."""
     root = root.absolute()
     try:
@@ -751,29 +768,38 @@ def inventory(root: Path) -> Inventory:
         result = _git_inventory(root, directory)
         if result is not None:
             return result
-    return _filesystem_inventory(root)
+    return _filesystem_inventory(root, decoding or DecodingContext())
 
 
-def _decode(data: bytes, relative: str, encoding: str | None) -> str | None:
+def _decode(
+    data: bytes, relative: str, encoding: str | None, *, decoding: DecodingContext | None = None
+) -> str | None:
     if not data:
         return ""
     if data.startswith(_BINARY_MAGICS):
         return None
     selected = encoding
+    unicode_hint = False
     if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
         selected = "utf-32"
+        unicode_hint = True
     elif data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         selected = "utf-16"
+        unicode_hint = True
     elif data.startswith(codecs.BOM_UTF8):
         selected = "utf-8-sig"
-    if selected is None and len(data) >= 4 and len(data) % 2 == 0:
+        unicode_hint = True
+    if selected is None and len(data) >= 4:
         sample = data[:8192]
+        sample = sample[: len(sample) - len(sample) % 2]
         even = sample[0::2].count(0) / len(sample[0::2])
         odd = sample[1::2].count(0) / len(sample[1::2])
         if odd > 0.6 and even < 0.1:
             selected = "utf-16-le"
+            unicode_hint = True
         elif even > 0.6 and odd < 0.1:
             selected = "utf-16-be"
+            unicode_hint = True
     if selected is None:
         controls = sum(byte < 32 and byte not in {9, 10, 12, 13} for byte in data)
         if b"\0" in data or controls / len(data) > 0.01:
@@ -781,14 +807,9 @@ def _decode(data: bytes, relative: str, encoding: str | None) -> str | None:
                 raise InventoryError("A likely source file contains undecodable binary controls.")
             return None
         selected = "utf-8"
-    try:
-        # Git/iconv spelling differs from Python's aliases for these common names.
-        aliases = {"utf-16le-bom": "utf-16-le", "utf-16be-bom": "utf-16-be"}
-        text = data.decode(aliases.get(selected.lower(), selected), errors="strict")
-    except (UnicodeError, LookupError):
-        raise InventoryError(
-            "A source file cannot be decoded safely; provide a supported working-tree-encoding."
-        ) from None
+    text = (decoding or DecodingContext()).decode(
+        data, relative, selected, unicode_hint=unicode_hint
+    )
     controls = sum(unicodedata.category(char) == "Cc" and char not in "\t\r\n\f" for char in text)
     if "\0" in text or (text and controls / len(text) > 0.01):
         if encoding or _maintained(relative):
@@ -797,8 +818,14 @@ def _decode(data: bytes, relative: str, encoding: str | None) -> str | None:
     return text
 
 
-def read_text(root: Path, relative: str, encoding: str | None = None) -> str | None:
-    """Return full decoded content, or None for deliberate binary/artifact exclusions."""
+def read_source(
+    root: Path,
+    relative: str,
+    encoding: str | None = None,
+    *,
+    decoding: DecodingContext | None = None,
+) -> SourceText | None:
+    """Read decoded text and hash original bytes, including any replaced byte values."""
     _validate_relative(relative)
     if _artifact(relative):
         return None
@@ -812,7 +839,7 @@ def read_text(root: Path, relative: str, encoding: str | None = None) -> str | N
     )
     if PurePosixPath(relative).suffix.lower() in _BINARY_SUFFIXES and not lfs_pointer:
         return None
-    text = _decode(data, relative, encoding)
+    text = _decode(data, relative, encoding, decoding=decoding)
     if text is None:
         return None
     path = PurePosixPath(relative)
@@ -829,7 +856,19 @@ def read_text(root: Path, relative: str, encoding: str | None = None) -> str | N
         )
     ):
         return None
-    return text
+    return SourceText(text, hashlib.sha256(data).digest())
+
+
+def read_text(
+    root: Path,
+    relative: str,
+    encoding: str | None = None,
+    *,
+    decoding: DecodingContext | None = None,
+) -> str | None:
+    """Return full decoded content, or None for deliberate binary/artifact exclusions."""
+    source = read_source(root, relative, encoding, decoding=decoding)
+    return source.text if source is not None else None
 
 
 def git_remote_name(root: Path) -> str | None:

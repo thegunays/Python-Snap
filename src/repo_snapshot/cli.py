@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .decoding import DEFAULT_FALLBACK_ENCODING
 from .errors import SnapshotError
 
 
@@ -33,6 +34,10 @@ def main(argv: Sequence[str] | None = None, *, project_root: Path | None = None)
         allow_abbrev=False,
     )
     parser.add_argument("--output", metavar="NAME.md", help="output basename (under output/)")
+    parser.add_argument(
+        "--fallback-encoding", default=DEFAULT_FALLBACK_ENCODING, metavar="ENCODING",
+        help="text encoding tried after UTF-8 fails (default: cp1254; e.g. cp1252)",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     try:
         arguments = parser.parse_args(argv)
@@ -47,7 +52,16 @@ def main(argv: Sequence[str] | None = None, *, project_root: Path | None = None)
         from .snapshot import generate
 
         root = (project_root or _project_root()).resolve()
-        result = generate(root, output_name=arguments.output)
+        result = generate(
+            root, output_name=arguments.output, fallback_encoding=arguments.fallback_encoding
+        )
+        for warning in result.decoding_warnings:
+            path = "".join(character for character in warning.path if character.isprintable())
+            detail = (
+                "undecodable characters were replaced with U+FFFD"
+                if warning.replaced else "the preferred encoding could not decode this file"
+            )
+            print(f"Warning: {path}: used {warning.encoding}; {detail}.", file=sys.stderr)
         relative = result.repository_root.relative_to(root / "input").as_posix()
         label = "input/" if relative == "." else "input/" + relative + "/"
         label = "".join(character for character in label if character.isprintable())

@@ -9,6 +9,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .decoding import DecodingContext
 from .discovery import discover_repository
 from .errors import InputError, SnapshotError, ValidationError
 from .inventory import Inventory, git_remote_name, read_text
@@ -52,7 +53,13 @@ def _safe_identifier(value: str) -> str | None:
     return value
 
 
-def repository_name(root: Path, listing: Inventory, *, input_root: Path | None = None) -> str:
+def repository_name(
+    root: Path,
+    listing: Inventory,
+    *,
+    input_root: Path | None = None,
+    decoding: DecodingContext | None = None,
+) -> str:
     """Prefer origin, a discovered folder name, then workspace/project evidence."""
     if listing.mode == "git":
         origin = git_remote_name(root)
@@ -72,7 +79,7 @@ def repository_name(root: Path, listing: Inventory, *, input_root: Path | None =
     for filename in ("pyproject.toml", "package.json", "Cargo.toml", "go.mod"):
         if filename not in listing.paths:
             continue
-        text = read_text(root, filename, listing.encodings.get(filename))
+        text = read_text(root, filename, listing.encodings.get(filename), decoding=decoding)
         if text is None:
             continue
         try:

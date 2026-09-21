@@ -19,13 +19,18 @@ commits, or writes under input are permitted.
   when no usable root Git metadata exists. Never inherit a parent's Git index.
 - Exclude derived artifacts and all symlinks deliberately. Nested repositories
   and submodule contents inside the selected repository do not expand its inventory.
-- Decode one file at a time, strictly, honoring BOMs and working-tree-encoding
-  where available. Unsupported legitimate source encodings fail the run.
+- Decode one file at a time: prefer BOMs and working-tree-encoding, then UTF-8,
+  then the project-wide fallback (default cp1254, selectable by CLI). Recover
+  remaining undecodable characters with U+FFFD. Damaged BOM-marked Unicode and
+  declared or detected UTF-16/UTF-32 retain their encoding. Recover unusable per-file
+  metadata, but reject invalid CLI fallback codecs. Deduplicate recovery warnings
+  per file across all passes.
 - Preserve eligible decoded source values unchanged. Apply no secret detection or
   masking to source content, source/output names, CLI labels, or diagnostics.
 - Write UTF-8 sections with literal relative paths and original decoded content.
-  Keep a private in-memory record of section offsets, sizes and hashes. This is
-  needed because source itself may contain lines beginning with `file:`.
+  Keep a private in-memory record of section offsets, sizes and hashes, plus raw
+  source-byte hashes so lossy decoding cannot conceal source changes. Boundaries
+  are needed because source itself may contain lines beginning with `file:`.
 - A fresh inventory and read/eligibility pass checks the staged sections against
   current source. Recheck repository selection and wrapper identities before
   validation and publication. Verify completed section byte bounds and hashes,
@@ -55,8 +60,9 @@ commits, or writes under input are permitted.
 
 - Parent Git metadata and external gitfiles must never admit outside files.
 - Raw header-like source lines cannot be parsed by a naive header regex.
-- Failed decoding, source races and output tampering must preserve previous output.
-- Preserve eligible decoded source values without interpretation or replacement.
+- Unreadable source, source races and output tampering must preserve previous output.
+- After decoding, preserve eligible text without further rewriting. Fallback
+  selection applies project-wide and does not guess each file's encoding.
 - Output symlinks, reserved filenames and path traversal must fail before writing.
 
 Original tests were written and run red before the corresponding implementation.

@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from .decoding import DEFAULT_FALLBACK_ENCODING, DecodingContext, DecodingWarning
 from .errors import InputError, SnapshotError, ValidationError
-from .inventory import inventory, read_text
+from .inventory import inventory, read_source
 from .workspace import Workspace, repository_name
 
 
@@ -35,6 +36,7 @@ class SnapshotResult:
     excluded_count: int
     mode: str
     repository_root: Path
+    decoding_warnings: tuple[DecodingWarning, ...] = ()
 
 
 def _digest(data: bytes) -> bytes:
@@ -68,13 +70,16 @@ def validate_snapshot(
     repository_root: Path,
     snapshot_path: Path,
     expected: tuple[Section, ...] | None = None,
+    *,
+    fallback_encoding: str = DEFAULT_FALLBACK_ENCODING,
 ) -> tuple[Section, ...]:
     """Independently inventory, decode and compare every completed snapshot byte.
 
     ``expected`` also checks that source did not change after the writing pass.
     The public validator can validate a snapshot without an in-memory manifest.
     """
-    listing = inventory(repository_root)
+    decoding = DecodingContext(fallback_encoding)
+    listing = inventory(repository_root, decoding=decoding)
     expected_sources = {item.path: item.source_digest for item in expected or ()}
     if expected is not None and len(expected_sources) != len(expected):
         raise ValidationError("Duplicate expected snapshot paths.")
@@ -83,12 +88,14 @@ def validate_snapshot(
     eligible_paths: list[str] = []
     with _open_snapshot(snapshot_path) as staged:
         for relative in listing.paths:
-            text = read_text(repository_root, relative, listing.encodings.get(relative))
-            if text is None:
+            source = read_source(
+                repository_root, relative, listing.encodings.get(relative), decoding=decoding
+            )
+            if source is None:
                 continue
             eligible_paths.append(relative)
-            payload = text.encode("utf-8")
-            source_digest = _digest(payload)
+            payload = source.text.encode("utf-8")
+            source_digest = source.source_digest
             if expected is not None and expected_sources.get(relative) != source_digest:
                 raise ValidationError(
                     "Eligible source membership or contents changed during generation."
@@ -133,16 +140,25 @@ def verify_snapshot_integrity(snapshot_path: Path, sections: tuple[Section, ...]
             raise ValidationError("Snapshot changed after completeness validation.")
 
 
-def generate(project_root: Path, output_name: str | None = None) -> SnapshotResult:
+def generate(
+    project_root: Path,
+    output_name: str | None = None,
+    *,
+    fallback_encoding: str = DEFAULT_FALLBACK_ENCODING,
+) -> SnapshotResult:
     """Publish a complete snapshot, preserving previous output on every failure."""
     temporary: Path | None = None
     try:
+        decoding = DecodingContext(fallback_encoding)
         workspace = Workspace.open(project_root)
-        listing = inventory(workspace.repository)
+        listing = inventory(workspace.repository, decoding=decoding)
         name = (
             output_name
             if output_name is not None
-            else repository_name(workspace.repository, listing, input_root=workspace.input) + ".md"
+            else repository_name(
+                workspace.repository, listing, input_root=workspace.input, decoding=decoding
+            )
+            + ".md"
         )
         target = workspace.target(name)
         descriptor, filename = tempfile.mkstemp(
@@ -153,12 +169,15 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
         excluded_count = listing.excluded_count
         with os.fdopen(descriptor, "wb") as staged:
             for relative in listing.paths:
-                text = read_text(workspace.repository, relative, listing.encodings.get(relative))
-                if text is None:
+                source = read_source(
+                    workspace.repository, relative, listing.encodings.get(relative),
+                    decoding=decoding,
+                )
+                if source is None:
                     excluded_count += 1
                     continue
-                payload = text.encode("utf-8")
-                source_digest = _digest(payload)
+                payload = source.text.encode("utf-8")
+                source_digest = source.source_digest
                 header = _header(relative)
                 start = staged.tell()
                 staged.write(header)
@@ -182,7 +201,10 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
             staged.flush()
             os.fsync(staged.fileno())
         workspace.check_repository_selection()
-        validated = validate_snapshot(workspace.repository, temporary, tuple(sections))
+        validated = validate_snapshot(
+            workspace.repository, temporary, tuple(sections),
+            fallback_encoding=decoding.fallback_encoding,
+        )
         verify_snapshot_integrity(temporary, validated)
         workspace.check_repository_selection()
         workspace.target(name)  # Recheck boundary/target after all potentially lengthy reads.
@@ -194,6 +216,7 @@ def generate(project_root: Path, output_name: str | None = None) -> SnapshotResu
             excluded_count,
             listing.mode,
             workspace.repository,
+            tuple(decoding.warnings[path] for path in sorted(decoding.warnings)),
         )
     except SnapshotError:
         raise
